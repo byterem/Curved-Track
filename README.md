@@ -27,7 +27,7 @@ curved track. The project is built for ICS 3204 – Computer Graphics.
 
 ## How to Run
 1. Clone the repository:
-   git clone <your-repo-link>
+   git clone https://github.com/byterem/Curved-Track.git
 2. Open the project in your C++ editor
 3. Compile and run `main.cpp`
 
