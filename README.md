@@ -34,8 +34,8 @@ curved track. The project is built for ICS 3204 – Computer Graphics.
 *(We will update this section as the project grows.)*
 
 ## Team Members
-- Name 1
-- Name 2
+- 192576 Sebudde Jeremy Mwesigwa
+- 192797 Ahmed Najma Wanjiku
 - Name 3
 - Name 4
 
