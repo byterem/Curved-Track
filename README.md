@@ -36,8 +36,9 @@ curved track. The project is built for ICS 3204 – Computer Graphics.
 ## Team Members
 - 192576 Sebudde Jeremy Mwesigwa
 - 192797 Ahmed Najma Wanjiku
-- Name 3
-- Name 4
+- 185318 Karani Shifla
+- 186400 Hafswa Sufi
+
 
 ## Course
 ICS 3204 – Computer Graphics, Strathmore University
