@@ -24,11 +24,6 @@ This creates `car_body.ppm` (a binary PPM image). Open it in an image viewer tha
 
 `drawCarBody(Canvas& canvas, int originX, int originY)` draws the body at a configurable location, in a local coordinate system. Person 3 adds the wheels using a separate midpoint-circle function. Before integration, the team should agree on a shared `Canvas` interface and consistent scale. The body is 184 pixels wide and 76 pixels tall, from local y=18 to 94. Suggested wheel centers: (45, 94) and (144, 94), radius 20.
 
-## Evidence for checkpoint
-
-1. Screenshot showing the generated car body image.
-2. Screenshot showing successful compilation and the output message.
-3. Commit containing this source file and README.
 
 ## CP2 plan
 
