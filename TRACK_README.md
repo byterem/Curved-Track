@@ -1,4 +1,4 @@
-# Track – Person 1 (CP1)
+# Track – Jeremy (CP1)
 
 Pure C++ implementation of a closed 2D race track built from **four cubic Bézier curves**. The road surface is filled with **scanline polygon fill** and both edges are drawn with the **DDA line drawing algorithm**. No OpenGL, no animation, and no external graphics library.
 
