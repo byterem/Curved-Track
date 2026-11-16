@@ -1,3 +1,9 @@
 # Build output and generated images (never commit these)
 track
 track.ppm
+*.exe
+*.gif
+*.bmp
+scene.ppm
+scene_preview.png
+f1_preview.png
