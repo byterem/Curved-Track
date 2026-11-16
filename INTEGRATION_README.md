@@ -3,7 +3,7 @@
 Checked against upstream main `337d643`. The track is merged (PR #2);
 the wheels are on `origin/feature/wheels` (`4342b05`).
 
-## Course component integration
+## Historical 2D component integration (retired)
 
 `main.cpp` combines Person 1's track and Person 2/3's body and wheels.
 It has one Canvas and one main function. The original component files are
@@ -17,12 +17,12 @@ g++ -std=c++17 -Wall -Wextra -pedantic clipping_test.cpp -o clipping_test.exe
 .\clipping_test.exe
 ```
 
-Output: `scene.ppm`. This is a static CP1 integration. CP2's homogeneous
-translation/rotation matrices are still outstanding; do not mark CP2 complete.
+Output: `scene.ppm`. This is a historical static CP1 integration; no further
+animation of this 2D car is planned. The active project is the F1 program below.
 `prepare_integration.py` records how the components were assembled; running it
 again overwrites main.cpp, so only use it intentionally.
 
-## Optional F1 animation supplied in the pasted chat
+## Active F1 animation
 
 ```powershell
 g++ -std=c++17 -O2 -Wall -Wextra -pedantic f1_race.cpp -o f1_race.exe
@@ -34,13 +34,15 @@ and `f1_frame.bmp`. No external C++ libraries are needed.
 Cars follow arc-length samples of four Bezier segments and face the tangent.
 The lane and speed oscillations repeat after one lap, allowing a seamless loop.
 
-This demo uses perspective, layered 3D car models, fog and supersampling.
+This program uses perspective, layered 3D car models, fog and supersampling.
 Perspective and supersampling are covered by Topics 9 and 10 of the supplied
-lecture notes, but exceed the repository's baseline checkpoint scope.
-It does not implement the required
-CP2 homogeneous matrix exercise. The F1 body and tyres are replacement models,
+lecture notes. The team has adopted F1 as the active project and retired the
+original 2D scene. The remaining CP2 code task is explicit homogeneous matrices
+for F1 rotation and translation, followed by a complete-lap regression check.
+Movement, tangent orientation and GIF output already work. OpenGL is deferred
+until CP3. The F1 body and tyres are replacement models,
 not the original teammates' side-view car and midpoint wheel routines.
-Keep this demo separate from the course integration and credit it accurately.
+Credit the model replacement and original component history accurately.
 
 Compile each entry point separately; compiling every .cpp together causes
 duplicate types, functions and main definitions.
