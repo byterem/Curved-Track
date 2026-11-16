@@ -7,3 +7,7 @@ track.ppm
 scene.ppm
 scene_preview.png
 f1_preview.png
+
+# Compiled programs (never commit these)
+f1_race
+f1_race_gl
