@@ -22,7 +22,7 @@ g++ -std=c++17 -O2 -Wall -Wextra -pedantic f1_race.cpp -o f1_race.exe
 .\f1_race.exe
 ```
 
-The program takes about 8 seconds and prints `Frame 1 / 100` ... `Frame 100 / 100`.
+The program takes about 7 seconds and prints `Frame 1 / 100` ... `Frame 100 / 100`.
 When it finishes it creates two files in the same folder:
 
 | File | What it is |
@@ -45,25 +45,55 @@ key and press Enter.
 
 | Key | Action |
 |---|---|
-| `W` | Speed up the red car |
-| `S` | Slow the red car down |
-| `A` / `D` | Move the red car across the track |
-| `C` | Change camera view: Broadcast, Follow, Close-up |
+| `W` | Speed up the red car (and play one frame) |
+| `S` | Slow the red car down (and play one frame) |
+| `A` / `D` | Move the red car across the track (and play one frame) |
+| Enter or Space | Play one frame with no change |
+| `C` | Change camera view (does not move time) |
 | `F` | Save the current picture as `f1_view.bmp` |
-| Enter (no key) | Move the race forward one frame |
 | `Q` | Quit |
 
-The other six cars keep racing on their own. The red car's speed is the
-distance it covers per frame, so press Enter more often for a faster race.
+Every driving key press is one frame of the race, so pressing a key is how time
+passes.
+
+The other six cars race on their own. They slow down behind a slower car, and
+when one is held up it tries the other side of the track. No two cars can pass
+through each other. If you drive into a car ahead, you are held back and the
+message `Contact` appears.
 
 Camera views:
 
 - **Broadcast**: the original fixed view.
-- **Follow**: the camera stays level with the red car, behind it.
+- **Follow**: the camera follows the red car from behind.
 - **Close-up**: the same, but closer to the car.
+- **Top**: looking almost straight down on the car.
+- **Low chase**: close to the ground, looking along the track.
 
-The camera only moves across and along the track. Its height and tilt stay the
-same, so it cannot turn or look from above.
+In the followed views the car stays in the middle of the picture.
+
+### Collision check
+
+`--check` runs the race with no drawing and reports whether any cars overlap,
+the smallest gap between cars, and how far the GIF loop jumps:
+
+```bash
+./f1_race --check
+```
+
+### Play mode in a window (OpenGL + GLUT)
+
+The same controls also work in a window. Build it with the GLUT flag, which
+links OpenGL and GLUT (on Linux, install freeglut first):
+
+```bash
+g++ -std=c++17 -O2 -Wall -Wextra -pedantic -DF1_USE_GLUT f1_race.cpp -o f1_race_gl -lglut -lGL
+./f1_race_gl --play
+```
+
+Click the window so it has keyboard focus. Keys are the same as above, except
+Space (or Enter) moves the race one frame. Escape also quits. OpenGL only shows
+the pixels our code draws; the picture itself is still made by our own
+algorithms.
 
 Play mode does not write the GIF. Running `./f1_race` with no argument still
 makes `f1_race.gif` as before.
