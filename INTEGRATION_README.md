@@ -52,6 +52,6 @@ The clipper has ten geometric checks. The GIF was independently decoded using
 Pillow: all 100 frames loaded, 99 differed from the first, duration 4000ms,
 infinite looping. Pillow is a verification tool only, not a runtime dependency.
 
-Development branch: `codex/clipping-integration`. Review the integration via a PR
+Development branch: `feature/clipping-integration`. Review the integration via a PR
 before merging into main. The standalone wheels branch remains separate; its
 drawing routines are included in the integrated main.cpp.
