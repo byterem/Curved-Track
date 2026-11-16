@@ -16,12 +16,14 @@
 //   * Supersampling anti-aliasing: render at 3x size, then average down.
 //   * Animation: every car moves along the Bezier track by arc length, frame by frame.
 #include <algorithm>
+#include <cctype>
 #include <cmath>
 #include <fstream>
 #include <functional>
 #include <initializer_list>
 #include <iostream>
 #include <stdexcept>
+#include <string>
 #include <vector>
 #include "clipping.h"
 
@@ -203,7 +205,8 @@ const int OUT_W = 800, OUT_H = 450;                   // size of the saved frame
 const int W = OUT_W * SS, H = OUT_H * SS;             // size we really draw at
 const double PX = W / 1280.0;                         // design pixels -> real pixels
 
-const double CAM_X = 450, CAM_Y = 790, CAM_H = 330;   // camera position in the world
+double CAM_X = 450, CAM_Y = 790;                      // camera ground position (moves in play mode)
+const double CAM_H = 330;                             // camera height in the world
 const double PITCH = 0.50;                            // look-down angle (radians)
 const double FOCAL = 610.0 * PX;
 const double SCREEN_CX = W / 2.0, SCREEN_CY = H * 0.595;
@@ -918,26 +921,9 @@ struct Team {
     double phase;
 };
 
-int main() {
-    const int FRAMES = 100;          // one lap = 100 frames
-    const int DELAY_CS = 4;          // 4/100 s per frame = 25 frames per second
-
-    buildFrames();
-
-    // Static scene, drawn once and copied for every frame.
-    Canvas base(W, H, {0, 0, 0});
-    drawSkyAndGround(base);
-    drawTrackSurface(base);
-
-    std::vector<Item> scenery;
-    addTrees(scenery);
-    addWalls(scenery);
-    addStands(scenery, STAND_A0, STAND_A1);
-    addStands(scenery, STAND_B0, STAND_B1);
-    addGantry(scenery);
-    std::sort(scenery.begin(), scenery.end(), [](const Item& a, const Item& b) { return a.key < b.key; });
-
-    const Team teams[] = {
+// The seven teams. Team 0 (red) is the car the player drives in play mode.
+std::vector<Team> makeTeams() {
+    return {
         {{214, 40, 48},  {245, 245, 245}, 0.00, -24, 0.20, 0.0},
         {{20, 150, 150}, {210, 215, 220}, 0.14,  24, 0.16, 1.3},
         {{240, 128, 34}, {30, 60, 150},   0.28, -24, 0.22, 2.4},
@@ -946,43 +932,204 @@ int main() {
         {{200, 205, 212},{214, 40, 48},   0.71,  24, 0.16, 5.0},
         {{110, 60, 170}, {240, 120, 190}, 0.86, -24, 0.22, 5.8},
     };
+}
+
+// Sky and track, painted once per picture (the camera may have moved).
+Canvas buildBase() {
+    Canvas base(W, H, {0, 0, 0});
+    drawSkyAndGround(base);
+    drawTrackSurface(base);
+    return base;
+}
+
+// A car's place on the track: its depth key (world Y), index, frame and lane offset.
+struct CarPlace { double key; int index; Frame fr; double lane; };
+
+// Where AI car i is at lap fraction t. t keeps growing; frameAt wraps the distance.
+CarPlace aiPlace(int i, const Team& tm, double t) {
+    // Distance round the lap. The sine term makes the speed rise and fall
+    // (cars gain and lose places) but ends exactly one lap later, so the
+    // animation loops seamlessly.
+    double s = tm.start + t + tm.surge * std::sin(2 * PI * t + tm.phase) / (2 * PI);
+    Frame fr = frameAt(s * g_trackLength);
+    double lane = tm.lane + 9.0 * std::sin(4 * PI * t + tm.phase);
+    Vec2 pos = offsetPoint(fr, lane);
+    return {pos.y, i, fr, lane};
+}
+
+// ---------------------------------------------------------------------------
+// Play mode: keyboard-style control of the red car and the camera.
+// ---------------------------------------------------------------------------
+const int PLAY_COLS = 100, PLAY_ROWS = 30;   // size of the text picture
+const double SPEED_STEP = 0.002;             // change per W / S press (lap fraction per frame)
+const double MAX_SPEED = 0.03;               // fastest the player's car can go
+const double LANE_STEP = 6.0;                // distance moved per A / D press
+const double LANE_LIMIT = 60.0;              // how far across the track the car may go
+const double FOLLOW_DIST = 260.0;            // camera distance behind the car (Follow view)
+const double CLOSE_DIST = 120.0;             // camera distance behind the car (Close-up view)
+
+enum CameraMode { VIEW_BROADCAST, VIEW_FOLLOW, VIEW_CLOSE, VIEW_COUNT };
+
+// The player's car: its own speed and lane, changed by the keys.
+struct Player {
+    double s = 0.0;        // distance round the lap, as a fraction of one lap
+    double speed = 0.01;   // lap fraction per frame (0.01 = one lap in 100 frames)
+    double lane = -24.0;   // sideways offset from the track centre
+};
+
+CarPlace playerPlace(const Player& p) {
+    Frame fr = frameAt(p.s * g_trackLength);
+    Vec2 pos = offsetPoint(fr, p.lane);
+    return {pos.y, 0, fr, p.lane};
+}
+
+// Move the camera ground position. Height and pitch stay the same.
+void setCamera(CameraMode mode, const Player& p) {
+    if (mode == VIEW_BROADCAST) {       // the original fixed view
+        CAM_X = 450; CAM_Y = 790;
+        return;
+    }
+    Vec2 pos = offsetPoint(frameAt(p.s * g_trackLength), p.lane);
+    double dist = (mode == VIEW_FOLLOW) ? FOLLOW_DIST : CLOSE_DIST;
+    CAM_X = pos.x;                      // stay level with the player's car
+    CAM_Y = pos.y + dist;               // and sit behind it
+}
+
+double clampLane(double lane) {
+    return std::max(-LANE_LIMIT, std::min(LANE_LIMIT, lane));
+}
+
+// Draw one picture: the base, then cars and scenery from far to near. The
+// result is anti-aliased and vignetted, ready to save or show.
+Canvas renderWorld(const Canvas& base, const std::vector<Item>& scenery,
+                   std::vector<CarPlace> places, const std::vector<CarModel>& cars) {
+    std::sort(places.begin(), places.end(), [](const CarPlace& a, const CarPlace& b) { return a.key < b.key; });
+    Canvas frame = base;
+    size_t next = 0;
+    auto drawNextCar = [&]() {
+        const CarPlace& cp = places[next++];
+        Vec2 pos = offsetPoint(cp.fr, cp.lane);
+        drawCar(frame, cars[cp.index], pos.x, pos.y, cp.fr.tx, cp.fr.ty);
+    };
+    for (const Item& it : scenery) {
+        while (next < places.size() && places[next].key <= it.key) drawNextCar();
+        it.draw(frame);
+    }
+    while (next < places.size()) drawNextCar();
+
+    Canvas out = frame.downsample(SS);  // anti-aliasing
+    applyVignette(out);
+    return out;
+}
+
+// Show the picture as text. Each character is the average brightness of a
+// block of pixels, picked from a ramp of characters from dark to light.
+void printTextView(const Canvas& img) {
+    const std::string ramp = " .:-=+*#%@";
+    const int blockW = img.width() / PLAY_COLS, blockH = img.height() / PLAY_ROWS;
+    std::string text = "\033[2J\033[H";  // clear the terminal, cursor to top-left
+    for (int row = 0; row < PLAY_ROWS; ++row) {
+        for (int col = 0; col < PLAY_COLS; ++col) {
+            double sum = 0;
+            for (int y = 0; y < blockH; ++y)
+                for (int x = 0; x < blockW; ++x) {
+                    Color c = img.get(col * blockW + x, row * blockH + y);
+                    sum += (c.r + c.g + c.b) / 3.0;
+                }
+            double level = sum / (blockW * blockH) / 256.0;   // 0..1
+            int index = std::min(static_cast<int>(level * ramp.size()), static_cast<int>(ramp.size()) - 1);
+            text += ramp[index];
+        }
+        text += '\n';
+    }
+    std::cout << text;
+}
+
+// Interactive loop. Type a key and press Enter. Enter alone moves the race
+// forward one frame, so the speed is set by how often you press it.
+int runPlay(const std::vector<Item>& scenery, const std::vector<CarModel>& cars,
+            const std::vector<Team>& teams) {
+    const char* viewNames[VIEW_COUNT] = {"Broadcast", "Follow", "Close-up"};
+    Player player;
+    CameraMode view = VIEW_BROADCAST;
+    int frameNo = 0;
+    std::string note;                    // message about the last key pressed
+    std::string line;
+
+    while (true) {
+        setCamera(view, player);
+        Canvas base = buildBase();
+        double t = frameNo / 100.0;      // lap fraction for the AI cars
+        std::vector<CarPlace> places;
+        places.push_back(playerPlace(player));
+        for (int i = 1; i < static_cast<int>(cars.size()); ++i)
+            places.push_back(aiPlace(i, teams[i], t));
+        printTextView(renderWorld(base, scenery, places, cars));
+
+        std::cout << "Frame " << frameNo << "  speed " << int(player.speed * 1000)
+                  << "  lane " << int(player.lane) << "  view " << viewNames[view] << "\n";
+        if (!note.empty()) std::cout << note << "\n";
+        std::cout << "W faster  S slower  A/D across track  C camera  F save image\n"
+                  << "Enter = next frame   Q = quit\n> " << std::flush;
+
+        if (!std::getline(std::cin, line)) break;
+        char key = line.empty() ? '\n' : static_cast<char>(std::tolower(static_cast<unsigned char>(line[0])));
+        note.clear();
+        if (key == 'q') break;
+        if (key == '\n') {
+            ++frameNo;
+            player.s += player.speed;
+        } else if (key == 'w') {
+            player.speed = std::min(MAX_SPEED, player.speed + SPEED_STEP);
+        } else if (key == 's') {
+            player.speed = std::max(0.0, player.speed - SPEED_STEP);
+        } else if (key == 'a') {
+            player.lane = clampLane(player.lane - LANE_STEP);
+        } else if (key == 'd') {
+            player.lane = clampLane(player.lane + LANE_STEP);
+        } else if (key == 'c') {
+            view = static_cast<CameraMode>((view + 1) % VIEW_COUNT);
+        } else if (key == 'f') {
+            Canvas shot = renderWorld(base, scenery, places, cars);
+            shot.saveBMP("f1_view.bmp");
+            note = "Saved f1_view.bmp";
+        } else {
+            note = "Unknown key. Use W, S, A, D, C, F, Enter or Q.";
+        }
+    }
+    return 0;
+}
+
+int main(int argc, char** argv) {
+    const int FRAMES = 100;          // one lap = 100 frames
+    const int DELAY_CS = 4;          // 4/100 s per frame = 25 frames per second
+
+    buildFrames();
+    std::vector<Item> scenery;
+    addTrees(scenery);
+    addWalls(scenery);
+    addStands(scenery, STAND_A0, STAND_A1);
+    addStands(scenery, STAND_B0, STAND_B1);
+    addGantry(scenery);
+    std::sort(scenery.begin(), scenery.end(), [](const Item& a, const Item& b) { return a.key < b.key; });
+
+    const std::vector<Team> teams = makeTeams();
     std::vector<CarModel> cars;
     for (const Team& t : teams) cars.push_back(makeCar(t.body, t.accent));
+
+    // "--play" starts the interactive terminal mode. No arguments makes the GIF.
+    if (argc > 1 && std::string(argv[1]) == "--play") return runPlay(scenery, cars, teams);
+
+    // Static scene, drawn once and copied for every frame.
+    Canvas base = buildBase();
 
     GifWriter gif;
     for (int f = 0; f < FRAMES; ++f) {
         double t = double(f) / FRAMES;                    // 0..1 through the lap
-
-        struct CarNow { double key; int index; Frame fr; double lane; };
-        std::vector<CarNow> now;
-        for (int i = 0; i < static_cast<int>(cars.size()); ++i) {
-            const Team& tm = teams[i];
-            // Distance round the lap. The sine term makes the speed rise and fall
-            // (cars gain and lose places) but ends exactly one lap later, so the
-            // animation loops seamlessly.
-            double s = tm.start + t + tm.surge * std::sin(2 * PI * t + tm.phase) / (2 * PI);
-            Frame fr = frameAt(s * g_trackLength);
-            double lane = tm.lane + 9.0 * std::sin(4 * PI * t + tm.phase);
-            Vec2 pos = offsetPoint(fr, lane);
-            now.push_back({pos.y, i, fr, lane});
-        }
-        std::sort(now.begin(), now.end(), [](const CarNow& a, const CarNow& b) { return a.key < b.key; });
-
-        Canvas frame = base;
-        size_t next = 0;
-        auto drawNextCar = [&]() {
-            const CarNow& cn = now[next++];
-            Vec2 pos = offsetPoint(cn.fr, cn.lane);
-            drawCar(frame, cars[cn.index], pos.x, pos.y, cn.fr.tx, cn.fr.ty);
-        };
-        for (const Item& it : scenery) {
-            while (next < now.size() && now[next].key <= it.key) drawNextCar();
-            it.draw(frame);
-        }
-        while (next < now.size()) drawNextCar();
-
-        Canvas out = frame.downsample(SS);                // anti-aliasing
-        applyVignette(out);
+        std::vector<CarPlace> places;
+        for (int i = 0; i < static_cast<int>(cars.size()); ++i)
+            places.push_back(aiPlace(i, teams[i], t));
+        Canvas out = renderWorld(base, scenery, places, cars);
 
         if (f == 0) {
             out.saveBMP("f1_frame.bmp");
