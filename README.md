@@ -4,8 +4,8 @@
 A pure C++17 graphics project for ICS 3204 – Computer Graphics.
 The active project is `f1_race.cpp`: open-wheel F1 cars drive around a closed
 Bezier circuit, turn with the track and render through a perspective camera.
-It exports a looping GIF using pixels calculated without external graphics
-libraries or OpenGL. The original static 2D scene in `main.cpp` is retired from
+It exports a looping GIF using its own pixel algorithms, and optionally displays
+a continuously animated, interactive OpenGL/GLUT window. The original static 2D scene in `main.cpp` is retired from
 active development and retained only as a historical component reference.
 
 ## Graphics Concepts Used
@@ -22,13 +22,35 @@ active development and retained only as a historical component reference.
 ## Project Progress
 - [x] CP1: Basic components integrated with clipping
 - [x] F1 animation: Closed-lap movement, tangent orientation and GIF output
-- [ ] CP2: Explicit homogeneous transformation matrices for the F1 model
-- [ ] CP3: OpenGL integration and animation
+- [x] CP2 implementation: Pure C++ translation, rotation and animation
+- [x] CP3 implementation: OpenGL window, continuous playback and keyboard interaction
 - [ ] CP4: Final demo
 
 ## Technologies
 - C++
-- OpenGL (from CP3)
+- OpenGL and freeglut (interactive window only)
+
+### Live race window on Windows
+
+Use MSYS2 MinGW64 g++ with freeglut installed. If needed, install
+`mingw-w64-x86_64-freeglut` in the MSYS2 MinGW64 terminal. Keep
+`C:\msys64\mingw64\bin` on PATH so the compiler and freeglut DLL can be found.
+
+```powershell
+g++ -std=c++17 -O2 -Wall -Wextra -pedantic -DF1_USE_GLUT f1_race.cpp -o f1_race_gl.exe -lfreeglut -lopengl32
+.\f1_race_gl.exe --play
+```
+
+The window starts running automatically. **P or Space** pauses/resumes;
+**R** restarts at frame 0, resets the camera/speed/lanes and leaves the race paused.
+**Enter** advances one frame while paused. **W/S** changes speed, **A/D** changes
+the target lane, **C** cycles five cameras, **F** saves `f1_view.bmp`, and
+**Q/Escape** quits. Speed and steering keys do not advance time while paused.
+Resizing preserves the scene's 16:9 proportions with black margins as needed.
+The simulation targets 25 steps per second; rendering speed depends on the
+computer, and long stalls use bounded catch-up to keep the controls responsive.
+The terminal-only `--play` mode remains command-by-command.
+See [F1_RACE_README.md](F1_RACE_README.md) for Linux builds and further details.
 
 ## How to Run
 1. Clone the repository:
@@ -170,9 +192,9 @@ In Topic 8's homogeneous coordinate notation, the equivalent operation is:
 ```
 
 This matrix explains the operation; the program evaluates the coordinate equations
-directly. The remaining CP2 implementation task is to express the F1 model's
-rotation and translation using reusable homogeneous matrices, then verify that
-placement and heading match the existing animation over a complete lap.
+directly. The supplied CP2 brief requires transformations and animation in pure
+C++, which these equations implement; it does not explicitly require a matrix
+class. A reusable matrix implementation is an optional learning extension.
 The original 2D car does not need further animation work. On the image grid, positive rotation
 appears clockwise because y points downwards.
 
@@ -197,8 +219,9 @@ effects rather than physically based light transport.
 The palette builder, ordered dithering and LZW GIF writer are supporting output
 code, not algorithms specifically demonstrated in the supplied lectures.
 Perspective and supersampling were taught and are part of the active F1 project.
-OpenGL remains deferred until CP3. Existing movement and orientation do not by
-themselves establish completion of the explicit CP2 matrix implementation.
+The CP3 window uses OpenGL to display our software-rendered pixels and GLUT to
+handle input and timer events. It is not a GPU geometry renderer: the original
+algorithms continue to generate the scene in C++.
 
 ## Contributions and verification
 
@@ -219,6 +242,15 @@ Both programs compile with C++17 and `-Wall -Wextra -pedantic`. Ten clipping cas
 cover inside, outside, horizontal, vertical, boundary, corner-crossing, reversed
 and degenerate lines. All 100 generated GIF frames were independently decoded;
 99 differ from the first and the total duration is 4000 ms.
+
+Window verification on Windows: automatic frame progression, pause holding frame
+126, restart to frame 0, paused single-step to frame 1, resume, all five cameras,
+speed adjustment without advancing paused time, screenshot export, quit and maximized aspect ratio were
+checked visually. Both the standard and freeglut builds compile without warnings.
+The collision check covers 5,000 normal and 5,000 aggressive-driving steps with
+zero reported overlapping frames. This is a simplified track-space collision
+model, not a full 3D physics engine. Final checkpoint evidence and the team demo
+remain to be prepared; implementation checkmarks are not grading claims.
 
 ## Team Members
 - 192576 Sebudde Jeremy Mwesigwa

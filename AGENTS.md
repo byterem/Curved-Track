@@ -6,7 +6,7 @@ Please read this before writing or changing any code.
 ## Project Summary
 The active project is the F1 race animation in `f1_race.cpp` for ICS 3204 –
 Computer Graphics. Cars follow a Bezier circuit and render through a perspective
-camera to a GIF. The original static 2D scene and components are historical
+camera to a GIF or continuous interactive OpenGL/GLUT window. The original static 2D scene and components are historical
 references, retired from active development by the team.
 
 This is a **student learning project**. Keep everything simple and easy to understand.
@@ -55,7 +55,7 @@ AGENTS.md   This file
 - `bezier.cpp` – Track curve
 - `clip.cpp` – Cohen-Sutherland
 - `transform.cpp` – Translate and rotate
-- `f1_race.cpp` – Active F1 animation entry point
+- `f1_race.cpp` – Active F1 animation entry point (GIF, terminal and OpenGL modes)
 - `main.cpp` – Historical static 2D integration
 
 ## Coding Style
@@ -72,7 +72,15 @@ g++ -std=c++17 -O2 -Wall -Wextra -pedantic f1_race.cpp -o f1_race
 ./f1_race
 ```
 Windows: use `f1_race.exe` and run `.\f1_race.exe`. Compile entry points
-separately. Update this once OpenGL is added in CP3.
+separately. For the CP3 window on Windows with MinGW64/freeglut:
+
+```
+g++ -std=c++17 -O2 -DF1_USE_GLUT f1_race.cpp -o f1_race_gl.exe -lfreeglut -lopengl32
+.\f1_race_gl.exe --play
+```
+
+P/Space pauses, R resets to a paused starting grid, Enter steps while paused.
+Preserve both the library-free output mode and OpenGL mode when editing shared code.
 
 ## Testing Your Work
 - Each component (track, car, wheel) should be testable on its own

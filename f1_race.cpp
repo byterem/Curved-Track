@@ -1299,7 +1299,7 @@ void printTextView(const Canvas& img, int cols, int rows) {
 // Apply one command. W/S/A/D and Space/Enter each play one frame of the race.
 // C changes the camera without moving time. Returns false when the player quits.
 // F (save) is handled by the caller.
-bool applyKey(PlayState& st, char key) {
+bool applyKey(PlayState& st, char key, bool advance = true) {
     st.note.clear();
     Race& r = st.race;
     if (key == 'q') return false;
@@ -1319,7 +1319,7 @@ bool applyKey(PlayState& st, char key) {
         st.note = "Unknown key. Use W, S, A, D, C, F, Space or Q.";
         return true;
     }
-    stepRace(r);
+    if (advance) stepRace(r);
     if (r.playerBlocked) st.note = "Contact: the car ahead holds you back.";
     return true;
 }
@@ -1413,20 +1413,38 @@ int runCheck(const World& w) {
 
 const World* g_world = nullptr;
 PlayState g_state;
+bool g_paused = false;
+int g_lastTick = 0, g_pendingMs = 0;
+int g_windowWidth = OUT_W, g_windowHeight = OUT_H;
+const int FRAME_MS = 40; // fixed simulation step: 25 frames per second
+
+// Keep a 16:9 picture centred in any window size.
+void resizeWindow(int width, int height) {
+    g_windowWidth = std::max(1, width);
+    g_windowHeight = std::max(1, height);
+    glutPostRedisplay();
+}
 
 // Redraw the picture and write the status text on top.
 void drawWindow() {
     Canvas img = renderState(g_state, *g_world);
     std::vector<unsigned char> rgb = img.toRGB();
+    glViewport(0, 0, g_windowWidth, g_windowHeight);
     glClear(GL_COLOR_BUFFER_BIT);
+    double scale = std::min(double(g_windowWidth) / OUT_W, double(g_windowHeight) / OUT_H);
+    int width = int(OUT_W * scale), height = int(OUT_H * scale);
+    glViewport((g_windowWidth-width)/2, (g_windowHeight-height)/2, width, height);
+    glPixelZoom(float(scale), float(scale));
     glRasterPos2i(-1, -1);                       // bottom-left of the window
     glDrawPixels(img.width(), img.height(), GL_RGB, GL_UNSIGNED_BYTE, rgb.data());
+    glPixelZoom(1, 1);
 
     glColor3f(1.0f, 1.0f, 1.0f);
     glRasterPos2f(-0.98f, -0.93f);
-    for (char ch : statusLine(g_state)) glutBitmapCharacter(GLUT_BITMAP_9_BY_15, ch);
+    std::string status = statusLine(g_state) + (g_paused ? "  PAUSED" : "  RUNNING");
+    for (char ch : status) glutBitmapCharacter(GLUT_BITMAP_9_BY_15, ch);
     glRasterPos2f(-0.98f, -0.84f);
-    const std::string help = "W/S speed  A/D across  C camera  Space next frame  F save  Q quit";
+    const std::string help = "W/S speed A/D steer C camera P/Space pause R restart Enter step F save Q quit";
     for (char ch : help) glutBitmapCharacter(GLUT_BITMAP_9_BY_15, ch);
     if (!g_state.note.empty()) {
         glRasterPos2f(-0.98f, -0.75f);
@@ -1435,17 +1453,48 @@ void drawWindow() {
     glutSwapBuffers();
 }
 
-// Keyboard callback: same keys as the terminal mode.
+// Window controls change settings; only the timer advances the running race.
 void onKey(unsigned char key, int, int) {
     char k = (key == 13) ? '\n' : static_cast<char>(std::tolower(key));
-    if (k == 27) std::exit(0);                    // Escape also quits
-    if (k == 'f') {
+    if (k == 27 || k == 'q') std::exit(0);
+    if (k == 'p' || k == ' ') {
+        g_paused = !g_paused;
+        g_pendingMs = 0;
+        g_lastTick = glutGet(GLUT_ELAPSED_TIME);
+    } else if (k == 'r') {
+        g_state = PlayState{};
+        g_state.race = makeRace(g_world->teams);
+        g_paused = true; // show the starting grid until the user resumes
+        g_pendingMs = 0;
+        g_lastTick = glutGet(GLUT_ELAPSED_TIME);
+    } else if (k == '\n') {
+        if (g_paused) stepRace(g_state.race);
+    } else if (k == 'f') {
         renderState(g_state, *g_world).saveBMP("f1_view.bmp");
         g_state.note = "Saved f1_view.bmp";
-    } else if (!applyKey(g_state, k)) {
-        std::exit(0);
+    } else {
+        applyKey(g_state, k, false);
     }
     glutPostRedisplay();
+}
+
+// Elapsed time keeps motion independent of rendering speed. Cap catch-up after
+// long stalls so restoring a window cannot skip a large section of the race.
+void animateWindow(int) {
+    int now = glutGet(GLUT_ELAPSED_TIME);
+    int elapsed = std::max(0, std::min(250, now - g_lastTick));
+    g_lastTick = now;
+    if (!g_paused) {
+        g_pendingMs += elapsed;
+        bool advanced = false;
+        while (g_pendingMs >= FRAME_MS) {
+            stepRace(g_state.race);
+            g_pendingMs -= FRAME_MS;
+            advanced = true;
+        }
+        if (advanced) glutPostRedisplay();
+    }
+    glutTimerFunc(16, animateWindow, 0);
 }
 
 int runWindow(const World& w) {
@@ -1457,9 +1506,12 @@ int runWindow(const World& w) {
     glutInit(&argc, argv);
     glutInitDisplayMode(GLUT_RGB | GLUT_DOUBLE);
     glutInitWindowSize(OUT_W, OUT_H);
-    glutCreateWindow("F1 Race: W/S speed, A/D across, C camera, Space next frame, Q quit");
+    glutCreateWindow("F1 Race - P/Space pause, R restart, C camera");
     glutDisplayFunc(drawWindow);
     glutKeyboardFunc(onKey);
+    glutReshapeFunc(resizeWindow);
+    g_lastTick = glutGet(GLUT_ELAPSED_TIME);
+    glutTimerFunc(16, animateWindow, 0);
     glutMainLoop();
     return 0;
 }
