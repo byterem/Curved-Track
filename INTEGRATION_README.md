@@ -37,10 +37,11 @@ The lane and speed oscillations repeat after one lap, allowing a seamless loop.
 This program uses perspective, layered 3D car models, fog and supersampling.
 Perspective and supersampling are covered by Topics 9 and 10 of the supplied
 lecture notes. The team has adopted F1 as the active project and retired the
-original 2D scene. The remaining CP2 code task is explicit homogeneous matrices
-for F1 rotation and translation, followed by a complete-lap regression check.
-Movement, tangent orientation and GIF output already work. OpenGL is deferred
-until CP3. The F1 body and tyres are replacement models,
+original 2D scene. Movement, tangent orientation and GIF output implement CP2's
+pure C++ transformations and animation. Explicit matrix classes are an optional
+extension, not a requirement stated in the supplied checkpoint brief.
+CP3 now includes an OpenGL/GLUT window with continuous animation, pause, restart
+and camera controls; see README.md for build commands. The F1 body and tyres are replacement models,
 not the original teammates' side-view car and midpoint wheel routines.
 Credit the model replacement and original component history accurately.
 

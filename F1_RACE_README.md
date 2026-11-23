@@ -94,11 +94,38 @@ g++ -std=c++17 -O2 -Wall -Wextra -pedantic -DF1_USE_GLUT f1_race.cpp -o f1_race_
 ./f1_race_gl --play
 ```
 
-Click the window so it has keyboard focus. The arrow keys drive the red car:
-hold Up to go faster, Down to slow, Left and Right to change lane. The letter
-keys still work too. Space (or Enter) moves the race one frame. Escape also quits. OpenGL only shows
-the pixels our code draws; the picture itself is still made by our own
-algorithms.
+Windows with MSYS2 MinGW64 and freeglut:
+
+```powershell
+g++ -std=c++17 -O2 -Wall -Wextra -pedantic -DF1_USE_GLUT f1_race.cpp -o f1_race_gl.exe -lfreeglut -lopengl32
+.\f1_race_gl.exe --play
+```
+
+If missing, install `mingw-w64-x86_64-freeglut` through the MSYS2 MinGW64
+terminal. `C:\msys64\mingw64\bin` must be on PATH for the compiler and DLLs.
+
+The window runs continuously, targeting 25 simulation steps per second. Click
+inside it for keyboard focus. Window controls differ from the terminal mode:
+
+| Key | Window action |
+| --- | --- |
+| P / Space | Pause or resume |
+| R | Reset race, camera and controls; remain paused at frame 0 |
+| Enter | Advance one frame while paused |
+| Up / W | Increase player speed |
+| Down / S | Decrease player speed |
+| Left / A | Move one lane left |
+| Right / D | Move one lane right |
+| C | Cycle Broadcast, Follow, Close-up, Top and Low chase |
+| F | Save `f1_view.bmp` |
+| Q / Escape | Quit |
+
+The arrow keys are mapped onto W/A/S/D, so both work the same way. Paused
+control changes do not advance time. The timer uses elapsed time and fixed
+40 ms simulation steps; long stalls are capped to avoid excessive catch-up.
+The window preserves the image proportions when resized. Rendering frame rate
+depends on CPU performance because our C++ algorithms draw every pixel.
+OpenGL displays those pixels; it does not replace the drawing algorithms.
 
 Play mode does not write the GIF. Running `./f1_race` with no argument still
 makes `f1_race.gif` as before.
