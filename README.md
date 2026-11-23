@@ -40,6 +40,20 @@ active development and retained only as a historical component reference.
 See [INTEGRATION_README.md](INTEGRATION_README.md) for clipping checks and the
 F1 integration details. Compile each program separately.
 
+### Drive the red car (arrow keys)
+
+Easiest way: run `./play.sh` (Linux/macOS) or double-click `play.bat` (Windows).
+It builds the game and starts it. Or build by hand:
+
+```bash
+g++ -std=c++17 -O2 -DF1_USE_GLUT f1_race.cpp -o f1_race_gl -lglut -lGL
+./f1_race_gl --play
+```
+
+Up = faster, Down = slower, Left/Right = change lane, `C` = change camera,
+Space = next frame, `Q` or Esc = quit. The other cars drive themselves.
+Details are in [F1_RACE_README.md](F1_RACE_README.md).
+
 ### F1 animation and clipping checks
 
 ```powershell

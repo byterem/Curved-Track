@@ -45,13 +45,17 @@ key and press Enter.
 
 | Key | Action |
 |---|---|
-| `W` | Speed up the red car (and play one frame) |
-| `S` | Slow the red car down (and play one frame) |
-| `A` / `D` | Move the red car across the track (and play one frame) |
+| `Up arrow` or `W` | Speed up the red car (and play one frame) |
+| `Down arrow` or `S` | Slow the red car down (and play one frame) |
+| `Left arrow` / `Right arrow` or `A` / `D` | Move the red car left / right across the track (and play one frame) |
 | Enter or Space | Play one frame with no change |
 | `C` | Change camera view (does not move time) |
 | `F` | Save the current picture as `f1_view.bmp` |
 | `Q` | Quit |
+
+In the terminal, an arrow key only works after you press Enter, because the
+terminal sends a whole line at a time. For smooth driving use the window
+version below, where arrow keys react instantly.
 
 Every driving key press is one frame of the race, so pressing a key is how time
 passes.
@@ -90,8 +94,9 @@ g++ -std=c++17 -O2 -Wall -Wextra -pedantic -DF1_USE_GLUT f1_race.cpp -o f1_race_
 ./f1_race_gl --play
 ```
 
-Click the window so it has keyboard focus. Keys are the same as above, except
-Space (or Enter) moves the race one frame. Escape also quits. OpenGL only shows
+Click the window so it has keyboard focus. The arrow keys drive the red car:
+hold Up to go faster, Down to slow, Left and Right to change lane. The letter
+keys still work too. Space (or Enter) moves the race one frame. Escape also quits. OpenGL only shows
 the pixels our code draws; the picture itself is still made by our own
 algorithms.
 
