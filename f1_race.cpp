@@ -1324,6 +1324,16 @@ bool applyKey(PlayState& st, char key, bool advance = true) {
     return true;
 }
 
+// An arrow key arrives in the terminal as ESC [ A/B/C/D. Turn the last letter
+// into the matching W/S/D/A command so arrows and letters share one code path.
+char arrowToKey(char letter) {
+    if (letter == 'A') return 'w';   // Up    = faster
+    if (letter == 'B') return 's';   // Down  = slower
+    if (letter == 'C') return 'd';   // Right = move right
+    if (letter == 'D') return 'a';   // Left  = move left
+    return '?';
+}
+
 // Terminal play mode. Type a key and press Enter. Each command is one frame of the race.
 int runTextPlay(const World& w) {
     const int COLS = 100, ROWS = 30;      // size of the text picture
@@ -1334,11 +1344,12 @@ int runTextPlay(const World& w) {
         printTextView(renderState(st, w), COLS, ROWS);
         std::cout << statusLine(st) << "\n";
         if (!st.note.empty()) std::cout << st.note << "\n";
-        std::cout << "W faster  S slower  A/D across track  C camera  F save image\n"
+        std::cout << "Up/W faster  Down/S slower  Left/Right (A/D) across track  C camera  F save image\n"
                   << "Enter = next frame   Q = quit\n> " << std::flush;
 
         if (!std::getline(std::cin, line)) break;
         char key = line.empty() ? '\n' : static_cast<char>(std::tolower(static_cast<unsigned char>(line[0])));
+        if (line.size() >= 3 && line[0] == 27 && line[1] == '[') key = arrowToKey(line[2]);
         if (key == 'f') {
             renderState(st, w).saveBMP("f1_view.bmp");
             st.note = "Saved f1_view.bmp";
@@ -1444,7 +1455,7 @@ void drawWindow() {
     std::string status = statusLine(g_state) + (g_paused ? "  PAUSED" : "  RUNNING");
     for (char ch : status) glutBitmapCharacter(GLUT_BITMAP_9_BY_15, ch);
     glRasterPos2f(-0.98f, -0.84f);
-    const std::string help = "W/S speed A/D steer C camera P/Space pause R restart Enter step F save Q quit";
+    const std::string help = "Arrows/WASD drive C camera P/Space pause R restart Enter step F save Q quit";
     for (char ch : help) glutBitmapCharacter(GLUT_BITMAP_9_BY_15, ch);
     if (!g_state.note.empty()) {
         glRasterPos2f(-0.98f, -0.75f);
@@ -1478,6 +1489,19 @@ void onKey(unsigned char key, int, int) {
     glutPostRedisplay();
 }
 
+// Arrow keys: GLUT reports them separately from letters. We reuse applyKey
+// without advancing, because the timer owns the race clock in window mode.
+void onSpecialKey(int key, int, int) {
+    char k = 0;
+    if (key == GLUT_KEY_UP) k = 'w';
+    else if (key == GLUT_KEY_DOWN) k = 's';
+    else if (key == GLUT_KEY_LEFT) k = 'a';
+    else if (key == GLUT_KEY_RIGHT) k = 'd';
+    if (k == 0) return;
+    applyKey(g_state, k, false);
+    glutPostRedisplay();
+}
+
 // Elapsed time keeps motion independent of rendering speed. Cap catch-up after
 // long stalls so restoring a window cannot skip a large section of the race.
 void animateWindow(int) {
@@ -1506,9 +1530,10 @@ int runWindow(const World& w) {
     glutInit(&argc, argv);
     glutInitDisplayMode(GLUT_RGB | GLUT_DOUBLE);
     glutInitWindowSize(OUT_W, OUT_H);
-    glutCreateWindow("F1 Race - P/Space pause, R restart, C camera");
+    glutCreateWindow("F1 Race - arrows/WASD drive, P/Space pause, R restart, C camera");
     glutDisplayFunc(drawWindow);
     glutKeyboardFunc(onKey);
+    glutSpecialFunc(onSpecialKey);
     glutReshapeFunc(resizeWindow);
     g_lastTick = glutGet(GLUT_ELAPSED_TIME);
     glutTimerFunc(16, animateWindow, 0);

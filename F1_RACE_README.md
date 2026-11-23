@@ -45,13 +45,17 @@ key and press Enter.
 
 | Key | Action |
 |---|---|
-| `W` | Speed up the red car (and play one frame) |
-| `S` | Slow the red car down (and play one frame) |
-| `A` / `D` | Move the red car across the track (and play one frame) |
+| `Up arrow` or `W` | Speed up the red car (and play one frame) |
+| `Down arrow` or `S` | Slow the red car down (and play one frame) |
+| `Left arrow` / `Right arrow` or `A` / `D` | Move the red car left / right across the track (and play one frame) |
 | Enter or Space | Play one frame with no change |
 | `C` | Change camera view (does not move time) |
 | `F` | Save the current picture as `f1_view.bmp` |
 | `Q` | Quit |
+
+In the terminal, an arrow key only works after you press Enter, because the
+terminal sends a whole line at a time. For smooth driving use the window
+version below, where arrow keys react instantly.
 
 Every driving key press is one frame of the race, so pressing a key is how time
 passes.
@@ -108,13 +112,16 @@ inside it for keyboard focus. Window controls differ from the terminal mode:
 | P / Space | Pause or resume |
 | R | Reset race, camera and controls; remain paused at frame 0 |
 | Enter | Advance one frame while paused |
-| W / S | Increase / decrease player speed |
-| A / D | Change target lane |
+| Up / W | Increase player speed |
+| Down / S | Decrease player speed |
+| Left / A | Move one lane left |
+| Right / D | Move one lane right |
 | C | Cycle Broadcast, Follow, Close-up, Top and Low chase |
 | F | Save `f1_view.bmp` |
 | Q / Escape | Quit |
 
-Paused control changes do not advance time. The timer uses elapsed time and fixed
+The arrow keys are mapped onto W/A/S/D, so both work the same way. Paused
+control changes do not advance time. The timer uses elapsed time and fixed
 40 ms simulation steps; long stalls are capped to avoid excessive catch-up.
 The window preserves the image proportions when resized. Rendering frame rate
 depends on CPU performance because our C++ algorithms draw every pixel.
