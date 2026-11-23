@@ -18,6 +18,7 @@
 #include <algorithm>
 #include <cctype>
 #include <cmath>
+#include <cstdlib>
 #include <fstream>
 #include <functional>
 #include <initializer_list>
@@ -120,6 +121,17 @@ public:
             out.write(reinterpret_cast<char*>(row.data()), rowBytes);
         }
     }
+    // The picture as RGB bytes, bottom row first (the order OpenGL expects).
+    std::vector<unsigned char> toRGB() const {
+        std::vector<unsigned char> out;
+        out.reserve(static_cast<size_t>(width_) * height_ * 3);
+        for (int y = height_ - 1; y >= 0; --y)
+            for (int x = 0; x < width_; ++x) {
+                const Color& c = pixels_[y * width_ + x];
+                out.push_back(c.r); out.push_back(c.g); out.push_back(c.b);
+            }
+        return out;
+    }
 private:
     int width_, height_;
     std::vector<Color> pixels_;
@@ -206,18 +218,23 @@ const int W = OUT_W * SS, H = OUT_H * SS;             // size we really draw at
 const double PX = W / 1280.0;                         // design pixels -> real pixels
 
 double CAM_X = 450, CAM_Y = 790;                      // camera ground position (moves in play mode)
-const double CAM_H = 330;                             // camera height in the world
-const double PITCH = 0.50;                            // look-down angle (radians)
+double CAM_H = 330;                                  // camera height in the world (changes with the view)
+double PITCH = 0.50;                                  // look-down angle in radians (changes with the view)
 const double FOCAL = 610.0 * PX;
 const double SCREEN_CX = W / 2.0, SCREEN_CY = H * 0.595;
-const double CP = std::cos(PITCH), SP = std::sin(PITCH);
-const double HORIZON_Y = SCREEN_CY - FOCAL * std::tan(PITCH);
+double CP = std::cos(PITCH), SP = std::sin(PITCH);   // cos and sin of PITCH, kept in step with it
+double HORIZON_Y = SCREEN_CY - FOCAL * std::tan(PITCH);
+// The sun stays at its broadcast-view height, so it stays in the sky in every view.
+const double SUN_Y = SCREEN_CY - FOCAL * std::tan(0.50) - 55.0 * PX;
 
 const Color HAZE{196, 214, 232};
 
 struct Proj { double x, y, z; };
 
 // World point (X, Y on the ground, h = height above ground) -> screen pixel.
+// Points closer to the camera than this (in depth) are behind or at the lens and are not drawn.
+const double NEAR_Z = 30.0;
+
 Proj project(double X, double Y, double h) {
     double rx = X - CAM_X, fwd = CAM_Y - Y, up = h - CAM_H;
     double z = fwd * CP - up * SP;
@@ -328,6 +345,9 @@ void drawRibbon(Canvas& c, double d0, double d1, double h,
         Vec2 a0 = offsetPoint(g_frames[i], d0), a1 = offsetPoint(g_frames[i], d1);
         Vec2 b0 = offsetPoint(g_frames[j], d0), b1 = offsetPoint(g_frames[j], d1);
         double z = project((a0.x + b1.x) / 2, (a0.y + b1.y) / 2, h).z;
+        // Skip quads that touch the near plane: their screen points would be wrong.
+        if (project(a0.x, a0.y, h).z < NEAR_Z || project(a1.x, a1.y, h).z < NEAR_Z ||
+            project(b0.x, b0.y, h).z < NEAR_Z || project(b1.x, b1.y, h).z < NEAR_Z) continue;
         fillPolygon(c, {scr(a0.x, a0.y, h), scr(a1.x, a1.y, h), scr(b1.x, b1.y, h), scr(b0.x, b0.y, h)},
                     fogged(col, z), alpha);
     }
@@ -401,7 +421,7 @@ void drawHillLayer(Canvas& c, double baseY, double amp, int seed, Color color) {
 
 void drawSkyAndGround(Canvas& c) {
     const Color skyTop{46, 102, 200}, skyHorizon{188, 215, 240};
-    const double sunX = W * 0.78, sunY = HORIZON_Y - 55.0 * PX;
+    const double sunX = W * 0.78, sunY = SUN_Y;
     const double sigma = 150.0 * PX;
 
     for (int sy = 0; sy < H; ++sy) {
@@ -942,61 +962,250 @@ Canvas buildBase() {
     return base;
 }
 
-// A car's place on the track: its depth key (world Y), index, frame and lane offset.
-struct CarPlace { double key; int index; Frame fr; double lane; };
-
-// Where AI car i is at lap fraction t. t keeps growing; frameAt wraps the distance.
-CarPlace aiPlace(int i, const Team& tm, double t) {
-    // Distance round the lap. The sine term makes the speed rise and fall
-    // (cars gain and lose places) but ends exactly one lap later, so the
-    // animation loops seamlessly.
-    double s = tm.start + t + tm.surge * std::sin(2 * PI * t + tm.phase) / (2 * PI);
-    Frame fr = frameAt(s * g_trackLength);
-    double lane = tm.lane + 9.0 * std::sin(4 * PI * t + tm.phase);
-    Vec2 pos = offsetPoint(fr, lane);
-    return {pos.y, i, fr, lane};
-}
-
 // ---------------------------------------------------------------------------
-// Play mode: keyboard-style control of the red car and the camera.
+// Race simulation. Each car has a speed and a lane that change every frame.
+// A car slows down behind a slower car and changes lane when it is stuck.
+// A safety check then makes sure no two cars ever overlap.
 // ---------------------------------------------------------------------------
-const int PLAY_COLS = 100, PLAY_ROWS = 30;   // size of the text picture
-const double SPEED_STEP = 0.002;             // change per W / S press (lap fraction per frame)
-const double MAX_SPEED = 0.03;               // fastest the player's car can go
-const double LANE_STEP = 6.0;                // distance moved per A / D press
-const double LANE_LIMIT = 60.0;              // how far across the track the car may go
-const double FOLLOW_DIST = 260.0;            // camera distance behind the car (Follow view)
-const double CLOSE_DIST = 120.0;             // camera distance behind the car (Close-up view)
+const double CAR_LEN = 104.0, CAR_WID = 42.0;   // car size (matches the drawn model)
+const double MIN_GAP = 30.0;                    // space kept between bumpers
+const double SAFE_GAP = 140.0;                  // closer than this, a car watches the car ahead
+const double FOLLOW_GAIN = 0.2;                 // how strongly a car matches the speed of the car ahead
+const double MAX_ACCEL = 1.0, MAX_BRAKE = 3.0;  // most a car can speed up or slow down per frame
+const double LANE_RATE = 1.2;                   // most a car can move sideways per frame
+const double LANE_LIMIT = 60.0;                 // how far across the track a car may go
+const int LANE_COOLDOWN = 90;                   // frames a car waits before changing lane again
+const double PLAYER_STEP_SPEED = 0.002;         // change per W / S press (lap fraction per frame)
+const double PLAYER_MAX_SPEED = 0.03;           // fastest the player's car can be asked to go
+const double PLAYER_LANE_STEP = 6.0;            // sideways change per A / D press
 
-enum CameraMode { VIEW_BROADCAST, VIEW_FOLLOW, VIEW_CLOSE, VIEW_COUNT };
-
-// The player's car: its own speed and lane, changed by the keys.
-struct Player {
-    double s = 0.0;        // distance round the lap, as a fraction of one lap
-    double speed = 0.01;   // lap fraction per frame (0.01 = one lap in 100 frames)
-    double lane = -24.0;   // sideways offset from the track centre
+struct Racer {
+    double s = 0;            // distance round the lap (not wrapped, so it can keep growing)
+    double v = 0;            // speed in world units per frame
+    double lane = 0;         // sideways offset from the track centre
+    double targetLane = 0;   // the lane the car is moving towards
+    double base = 0;         // cruising speed (one lap in 100 frames)
+    double surge = 0, phase = 0;   // how the wished speed rises and falls
+    bool player = false;
+    int cooldown = 0;        // frames until this car may change lane again
 };
 
-CarPlace playerPlace(const Player& p) {
-    Frame fr = frameAt(p.s * g_trackLength);
-    Vec2 pos = offsetPoint(fr, p.lane);
-    return {pos.y, 0, fr, p.lane};
+struct Race {
+    std::vector<Racer> racers;     // racers[0] is the player's car
+    int frame = 0;                 // frames simulated so far
+    double playerSpeed = 0.01;     // speed the player asks for (lap fraction per frame)
+    bool playerBlocked = false;    // true in a frame where the player was held back
+    int corrections = 0;           // how many times the safety check had to move a car
+    int laneChanges = 0;           // lane changes made by AI cars
+};
+
+// Signed distance from a to b along the lap, in the range (-L/2, L/2].
+double lapDelta(double a, double b) {
+    const double L = g_trackLength;
+    double d = std::fmod(b - a, L);
+    if (d > L / 2) d -= L;
+    if (d <= -L / 2) d += L;
+    return d;
 }
 
-// Move the camera ground position. Height and pitch stay the same.
-void setCamera(CameraMode mode, const Player& p) {
-    if (mode == VIEW_BROADCAST) {       // the original fixed view
-        CAM_X = 450; CAM_Y = 790;
+// Start a race from the team table. Every car starts at its grid position.
+Race makeRace(const std::vector<Team>& teams) {
+    Race r;
+    for (const Team& t : teams) {
+        Racer c;
+        c.base = g_trackLength / 100.0;
+        c.v = c.base;
+        c.s = t.start * g_trackLength;
+        c.surge = t.surge;
+        c.phase = t.phase;
+        c.lane = c.targetLane = t.lane;
+        r.racers.push_back(c);
+    }
+    r.racers[0].player = true;
+    return r;
+}
+
+// Speed a car would like to drive at this frame.
+double desiredSpeed(const Race& r, const Racer& c) {
+    if (c.player) return r.playerSpeed * g_trackLength;
+    // Same rise and fall as the first version of the animation.
+    return c.base * (1.0 + c.surge * std::cos(2 * PI * r.frame / 100.0 + c.phase));
+}
+
+// The nearest car ahead of car i in its lane band, or -1 if there is none.
+int leaderOf(const Race& r, int i) {
+    int best = -1;
+    double bestDist = 1e18;
+    for (int j = 0; j < static_cast<int>(r.racers.size()); ++j) {
+        if (j == i) continue;
+        if (std::fabs(r.racers[j].lane - r.racers[i].lane) >= CAR_WID + 6) continue;
+        double d = lapDelta(r.racers[i].s, r.racers[j].s);
+        if (d > 0 && d < bestDist) { bestDist = d; best = j; }
+    }
+    return best;
+}
+
+// True if no other car is beside, or close behind or ahead of, the lane `side`.
+bool laneFree(const Race& r, int self, double side) {
+    for (int j = 0; j < static_cast<int>(r.racers.size()); ++j) {
+        if (j == self) continue;
+        if (std::fabs(r.racers[j].lane - side) >= CAR_WID + 6) continue;
+        if (std::fabs(lapDelta(r.racers[self].s, r.racers[j].s)) < CAR_LEN + 2 * MIN_GAP) return false;
+    }
+    return true;
+}
+
+// True if cars i and j overlap or are closer than the minimum gap.
+bool tooClose(const Race& r, int i, int j) {
+    const Racer& a = r.racers[i];
+    const Racer& b = r.racers[j];
+    if (std::fabs(a.lane - b.lane) >= CAR_WID) return false;      // side by side with room
+    return std::fabs(lapDelta(a.s, b.s)) < CAR_LEN + MIN_GAP;
+}
+
+// Safety check. If two cars are too close, the one behind is moved back
+// until the gap is right. Returns how many pairs had to be fixed.
+int keepApart(Race& r) {
+    int fixes = 0;
+    const double need = CAR_LEN + MIN_GAP;
+    const int n = static_cast<int>(r.racers.size());
+    for (int i = 0; i < n; ++i)
+        for (int j = i + 1; j < n; ++j) {
+            if (!tooClose(r, i, j)) continue;
+            double d = lapDelta(r.racers[i].s, r.racers[j].s);   // where j is, seen from i
+            int back = (d > 0) ? i : j;                          // the car that must give way
+            int front = (d > 0) ? j : i;
+            double dist = lapDelta(r.racers[back].s, r.racers[front].s);
+            r.racers[back].s += dist - need;                     // move back to the right gap
+            r.racers[back].v = std::min(r.racers[back].v, r.racers[front].v);
+            if (r.racers[back].player) r.playerBlocked = true;
+            ++fixes;
+        }
+    return fixes;
+}
+
+// Advance the race by one frame.
+void stepRace(Race& r) {
+    r.playerBlocked = false;
+    for (int i = 0; i < static_cast<int>(r.racers.size()); ++i) {
+        Racer& c = r.racers[i];
+        double wish = desiredSpeed(r, c);
+        double want = wish;
+        int ahead = leaderOf(r, i);
+        if (ahead >= 0) {
+            const Racer& lead = r.racers[ahead];
+            double gap = lapDelta(c.s, lead.s) - CAR_LEN;          // bumper-to-bumper gap
+            if (gap < SAFE_GAP) {
+                double follow = lead.v + (gap - MIN_GAP) * FOLLOW_GAIN;
+                want = std::min(want, std::max(0.0, follow));
+            }
+            // A car held up by a slower car tries the other side of the track.
+            bool stuck = gap < SAFE_GAP / 2 && lead.v < 0.9 * wish;   // the car ahead is holding it up
+            if (!c.player && c.cooldown == 0 && stuck && laneFree(r, i, -c.targetLane)) {
+                c.targetLane = -c.targetLane;
+                c.cooldown = LANE_COOLDOWN;
+                ++r.laneChanges;
+            }
+        }
+        // Speed up or slow down, but not by more than the car can manage in one frame.
+        c.v += std::max(-MAX_BRAKE, std::min(MAX_ACCEL, want - c.v));
+        if (c.v < 0) c.v = 0;
+    }
+    for (Racer& c : r.racers) {
+        c.s += c.v;
+        c.lane += std::max(-LANE_RATE, std::min(LANE_RATE, c.targetLane - c.lane));
+        if (c.cooldown > 0) --c.cooldown;
+    }
+    ++r.frame;
+    for (int pass = 0; pass < 3; ++pass) r.corrections += keepApart(r);
+}
+
+// How far apart two race states are: the largest change in any car's place
+// (distance round the lap, or sideways). Zero means the two states match.
+double loopSeam(const Race& a, const Race& b) {
+    double seam = 0;
+    for (size_t i = 0; i < a.racers.size(); ++i) {
+        seam = std::max(seam, std::fabs(lapDelta(a.racers[i].s, b.racers[i].s)));
+        seam = std::max(seam, std::fabs(a.racers[i].lane - b.racers[i].lane));
+    }
+    return seam;
+}
+
+// Choose the frame to start the GIF from. Starting at frame o and ending 100
+// frames later should give the smallest jump back to the start. Returns o.
+int findLoopStart(const std::vector<Team>& teams, double& bestSeam) {
+    const int SEARCH = 600;              // how many starting frames to try
+    Race scan = makeRace(teams);
+    int best = 0;
+    bestSeam = 1e18;
+    for (int o = 0; o < SEARCH; ++o) {
+        Race later = scan;
+        for (int f = 0; f < 100; ++f) stepRace(later);
+        double seam = loopSeam(scan, later);
+        if (seam < bestSeam) { bestSeam = seam; best = o; }
+        stepRace(scan);
+    }
+    return best;
+}
+
+// Where a racer is drawn: its depth key, index, frame and lane offset.
+struct CarPlace { double key; int index; Frame fr; double lane; };
+
+CarPlace placeOf(const Racer& c, int index) {
+    Frame fr = frameAt(c.s);
+    Vec2 pos = offsetPoint(fr, c.lane);
+    return {pos.y, index, fr, c.lane};
+}
+
+std::vector<CarPlace> placesOf(const Race& r) {
+    std::vector<CarPlace> places;
+    for (int i = 0; i < static_cast<int>(r.racers.size()); ++i)
+        places.push_back(placeOf(r.racers[i], i));
+    return places;
+}
+
+// ---------------------------------------------------------------------------
+// Camera views. Each view sets the camera height and tilt, and where it stands.
+// ---------------------------------------------------------------------------
+enum CameraMode { VIEW_BROADCAST, VIEW_FOLLOW, VIEW_CLOSE, VIEW_TOP, VIEW_LOW, VIEW_COUNT };
+
+struct ViewSetting {
+    const char* name;
+    bool follow;      // true: the camera follows the player's car
+    double height;    // camera height
+    double pitch;     // tilt: larger looks down more steeply
+};
+
+// For a followed view the camera stands at height / tan(pitch) behind the car.
+// That puts the car in the middle of the picture.
+const ViewSetting VIEWS[VIEW_COUNT] = {
+    {"Broadcast", false, 330, 0.50},   // the original fixed view
+    {"Follow",    true,  250, 0.70},
+    {"Close-up",  true,  120, 0.785},
+    {"Top",       true,  700, 1.20},   // looking almost straight down
+    {"Low chase", true,  40,  0.25},   // close to the ground, looking along the track
+};
+
+// Set the camera height and tilt, and keep the values derived from the tilt in step.
+void setLens(double height, double pitch) {
+    CAM_H = height;
+    PITCH = pitch;
+    CP = std::cos(pitch);
+    SP = std::sin(pitch);
+    HORIZON_Y = SCREEN_CY - FOCAL * std::tan(pitch);
+}
+
+// Move the camera for the chosen view. The car it follows is the player's.
+void setCamera(CameraMode mode, const Racer& car) {
+    const ViewSetting& vs = VIEWS[mode];
+    setLens(vs.height, vs.pitch);
+    if (!vs.follow) {
+        CAM_X = 450; CAM_Y = 790;       // same spot as the original fixed view
         return;
     }
-    Vec2 pos = offsetPoint(frameAt(p.s * g_trackLength), p.lane);
-    double dist = (mode == VIEW_FOLLOW) ? FOLLOW_DIST : CLOSE_DIST;
-    CAM_X = pos.x;                      // stay level with the player's car
-    CAM_Y = pos.y + dist;               // and sit behind it
-}
-
-double clampLane(double lane) {
-    return std::max(-LANE_LIMIT, std::min(LANE_LIMIT, lane));
+    Vec2 pos = offsetPoint(frameAt(car.s), car.lane);
+    CAM_X = pos.x;                       // stay level with the car
+    CAM_Y = pos.y + vs.height / std::tan(vs.pitch);   // and stand back so the car is centred
 }
 
 // Draw one picture: the base, then cars and scenery from far to near. The
@@ -1009,11 +1218,12 @@ Canvas renderWorld(const Canvas& base, const std::vector<Item>& scenery,
     auto drawNextCar = [&]() {
         const CarPlace& cp = places[next++];
         Vec2 pos = offsetPoint(cp.fr, cp.lane);
-        drawCar(frame, cars[cp.index], pos.x, pos.y, cp.fr.tx, cp.fr.ty);
+        if (pos.y <= CAM_Y) drawCar(frame, cars[cp.index], pos.x, pos.y, cp.fr.tx, cp.fr.ty);
     };
+    // Anything with a world Y beyond the camera is behind it and is skipped.
     for (const Item& it : scenery) {
         while (next < places.size() && places[next].key <= it.key) drawNextCar();
-        it.draw(frame);
+        if (it.key <= CAM_Y) it.draw(frame);
     }
     while (next < places.size()) drawNextCar();
 
@@ -1022,14 +1232,55 @@ Canvas renderWorld(const Canvas& base, const std::vector<Item>& scenery,
     return out;
 }
 
-// Show the picture as text. Each character is the average brightness of a
-// block of pixels, picked from a ramp of characters from dark to light.
-void printTextView(const Canvas& img) {
+// Everything the scene needs that does not change from frame to frame.
+struct World {
+    std::vector<Item> scenery;
+    std::vector<CarModel> cars;
+    std::vector<Team> teams;
+};
+
+World buildWorld() {
+    World w;
+    addTrees(w.scenery);
+    addWalls(w.scenery);
+    addStands(w.scenery, STAND_A0, STAND_A1);
+    addStands(w.scenery, STAND_B0, STAND_B1);
+    addGantry(w.scenery);
+    std::sort(w.scenery.begin(), w.scenery.end(), [](const Item& a, const Item& b) { return a.key < b.key; });
+    w.teams = makeTeams();
+    for (const Team& t : w.teams) w.cars.push_back(makeCar(t.body, t.accent));
+    return w;
+}
+
+// What play mode remembers between key presses.
+struct PlayState {
+    Race race;
+    CameraMode view = VIEW_BROADCAST;
+    std::string note;   // message about the last key pressed
+};
+
+// Draw the picture for the current state (camera, cars and scenery).
+Canvas renderState(const PlayState& st, const World& w) {
+    setCamera(st.view, st.race.racers[0]);
+    Canvas base = buildBase();
+    return renderWorld(base, w.scenery, placesOf(st.race), w.cars);
+}
+
+// One line of status shown under the picture.
+std::string statusLine(const PlayState& st) {
+    return "Frame " + std::to_string(st.race.frame) +
+           "  speed " + std::to_string(int(st.race.playerSpeed * 1000)) +
+           "  lane " + std::to_string(int(st.race.racers[0].lane)) +
+           "  view " + VIEWS[st.view].name;
+}
+
+// Turn the image into text: each character is the average brightness of a block of pixels.
+void printTextView(const Canvas& img, int cols, int rows) {
     const std::string ramp = " .:-=+*#%@";
-    const int blockW = img.width() / PLAY_COLS, blockH = img.height() / PLAY_ROWS;
+    const int blockW = img.width() / cols, blockH = img.height() / rows;
     std::string text = "\033[2J\033[H";  // clear the terminal, cursor to top-left
-    for (int row = 0; row < PLAY_ROWS; ++row) {
-        for (int col = 0; col < PLAY_COLS; ++col) {
+    for (int row = 0; row < rows; ++row) {
+        for (int col = 0; col < cols; ++col) {
             double sum = 0;
             for (int y = 0; y < blockH; ++y)
                 for (int x = 0; x < blockW; ++x) {
@@ -1045,97 +1296,258 @@ void printTextView(const Canvas& img) {
     std::cout << text;
 }
 
-// Interactive loop. Type a key and press Enter. Enter alone moves the race
-// forward one frame, so the speed is set by how often you press it.
-int runPlay(const std::vector<Item>& scenery, const std::vector<CarModel>& cars,
-            const std::vector<Team>& teams) {
-    const char* viewNames[VIEW_COUNT] = {"Broadcast", "Follow", "Close-up"};
-    Player player;
-    CameraMode view = VIEW_BROADCAST;
-    int frameNo = 0;
-    std::string note;                    // message about the last key pressed
+// Apply one command. W/S/A/D and Space/Enter each play one frame of the race.
+// C changes the camera without moving time. Returns false when the player quits.
+// F (save) is handled by the caller.
+bool applyKey(PlayState& st, char key, bool advance = true) {
+    st.note.clear();
+    Race& r = st.race;
+    if (key == 'q') return false;
+    if (key == 'c') {
+        st.view = static_cast<CameraMode>((st.view + 1) % VIEW_COUNT);
+        return true;
+    }
+    if (key == 'w') {
+        r.playerSpeed = std::min(PLAYER_MAX_SPEED, r.playerSpeed + PLAYER_STEP_SPEED);
+    } else if (key == 's') {
+        r.playerSpeed = std::max(0.0, r.playerSpeed - PLAYER_STEP_SPEED);
+    } else if (key == 'a') {
+        r.racers[0].targetLane = std::max(-LANE_LIMIT, r.racers[0].targetLane - PLAYER_LANE_STEP);
+    } else if (key == 'd') {
+        r.racers[0].targetLane = std::min(LANE_LIMIT, r.racers[0].targetLane + PLAYER_LANE_STEP);
+    } else if (key != '\n' && key != ' ') {
+        st.note = "Unknown key. Use W, S, A, D, C, F, Space or Q.";
+        return true;
+    }
+    if (advance) stepRace(r);
+    if (r.playerBlocked) st.note = "Contact: the car ahead holds you back.";
+    return true;
+}
+
+// Terminal play mode. Type a key and press Enter. Each command is one frame of the race.
+int runTextPlay(const World& w) {
+    const int COLS = 100, ROWS = 30;      // size of the text picture
+    PlayState st;
+    st.race = makeRace(w.teams);
     std::string line;
-
     while (true) {
-        setCamera(view, player);
-        Canvas base = buildBase();
-        double t = frameNo / 100.0;      // lap fraction for the AI cars
-        std::vector<CarPlace> places;
-        places.push_back(playerPlace(player));
-        for (int i = 1; i < static_cast<int>(cars.size()); ++i)
-            places.push_back(aiPlace(i, teams[i], t));
-        printTextView(renderWorld(base, scenery, places, cars));
-
-        std::cout << "Frame " << frameNo << "  speed " << int(player.speed * 1000)
-                  << "  lane " << int(player.lane) << "  view " << viewNames[view] << "\n";
-        if (!note.empty()) std::cout << note << "\n";
+        printTextView(renderState(st, w), COLS, ROWS);
+        std::cout << statusLine(st) << "\n";
+        if (!st.note.empty()) std::cout << st.note << "\n";
         std::cout << "W faster  S slower  A/D across track  C camera  F save image\n"
                   << "Enter = next frame   Q = quit\n> " << std::flush;
 
         if (!std::getline(std::cin, line)) break;
         char key = line.empty() ? '\n' : static_cast<char>(std::tolower(static_cast<unsigned char>(line[0])));
-        note.clear();
-        if (key == 'q') break;
-        if (key == '\n') {
-            ++frameNo;
-            player.s += player.speed;
-        } else if (key == 'w') {
-            player.speed = std::min(MAX_SPEED, player.speed + SPEED_STEP);
-        } else if (key == 's') {
-            player.speed = std::max(0.0, player.speed - SPEED_STEP);
-        } else if (key == 'a') {
-            player.lane = clampLane(player.lane - LANE_STEP);
-        } else if (key == 'd') {
-            player.lane = clampLane(player.lane + LANE_STEP);
-        } else if (key == 'c') {
-            view = static_cast<CameraMode>((view + 1) % VIEW_COUNT);
-        } else if (key == 'f') {
-            Canvas shot = renderWorld(base, scenery, places, cars);
-            shot.saveBMP("f1_view.bmp");
-            note = "Saved f1_view.bmp";
-        } else {
-            note = "Unknown key. Use W, S, A, D, C, F, Enter or Q.";
+        if (key == 'f') {
+            renderState(st, w).saveBMP("f1_view.bmp");
+            st.note = "Saved f1_view.bmp";
+        } else if (!applyKey(st, key)) {
+            break;
         }
     }
     return 0;
 }
+
+// Test mode (--check): run the race with no drawing and report collisions,
+// gaps and the loop seam. Used to check that the cars never clip.
+// Run one test scenario and print its results. When `aggressive` is set, the
+// player drives at top speed and keeps swapping lanes, to test the contact rules.
+int checkScenario(const World& w, const char* title, bool aggressive) {
+    const int FRAMES = 5000;
+    Race r = makeRace(w.teams);
+    if (aggressive) r.playerSpeed = PLAYER_MAX_SPEED;
+    int overlapFrames = 0;
+    double minGap = 1e18;
+    int playerBlockedFrames = 0;
+    for (int f = 0; f < FRAMES; ++f) {
+        if (aggressive && f % 60 == 0) r.racers[0].targetLane = (r.racers[0].targetLane > 0) ? -LANE_LIMIT : LANE_LIMIT;
+        stepRace(r);
+        if (r.playerBlocked) ++playerBlockedFrames;
+        bool bad = false;
+        for (int i = 0; i < static_cast<int>(r.racers.size()); ++i)
+            for (int j = i + 1; j < static_cast<int>(r.racers.size()); ++j) {
+                if (std::fabs(r.racers[i].lane - r.racers[j].lane) >= CAR_WID) continue;
+                double gap = std::fabs(lapDelta(r.racers[i].s, r.racers[j].s)) - CAR_LEN;
+                if (gap < 0) bad = true;
+                minGap = std::min(minGap, gap);
+            }
+        if (bad) ++overlapFrames;
+    }
+    std::cout << "== " << title << " ==\n"
+              << "Frames simulated:             " << FRAMES << "\n"
+              << "Frames with overlapping cars: " << overlapFrames << "\n"
+              << "Smallest bumper gap seen:     " << int(minGap) << " units\n"
+              << "Safety corrections:           " << r.corrections << "\n"
+              << "AI lane changes:              " << r.laneChanges << "\n"
+              << "Frames the player was held:   " << playerBlockedFrames << "\n";
+    return overlapFrames;
+}
+
+// Test mode (--check): run the race with no drawing and report collisions,
+// gaps and the loop seam. Used to check that the cars never clip.
+int runCheck(const World& w) {
+    int bad = checkScenario(w, "Normal driving", false);
+    bad += checkScenario(w, "Player flat out, weaving", true);
+
+    // Loop seam for the GIF: the best starting frame and the jump it leaves.
+    double seam = 0;
+    int startFrame = findLoopStart(w.teams, seam);
+    std::cout << "GIF start frame: " << startFrame << ", loop seam " << seam
+              << " units (0 = seamless)\n";
+    return bad == 0 ? 0 : 1;
+}
+
+#ifdef F1_USE_GLUT
+// ---------------------------------------------------------------------------
+// Window play mode (OpenGL + GLUT). Built only with -DF1_USE_GLUT.
+// The picture is still drawn by our own code; OpenGL only shows the pixels
+// and reports key presses. The window uses file-level state because GLUT
+// callbacks are plain functions with no place to pass data.
+// ---------------------------------------------------------------------------
+#ifdef __APPLE__
+#include <GLUT/glut.h>
+#else
+#include <GL/glut.h>
+#endif
+
+const World* g_world = nullptr;
+PlayState g_state;
+bool g_paused = false;
+int g_lastTick = 0, g_pendingMs = 0;
+int g_windowWidth = OUT_W, g_windowHeight = OUT_H;
+const int FRAME_MS = 40; // fixed simulation step: 25 frames per second
+
+// Keep a 16:9 picture centred in any window size.
+void resizeWindow(int width, int height) {
+    g_windowWidth = std::max(1, width);
+    g_windowHeight = std::max(1, height);
+    glutPostRedisplay();
+}
+
+// Redraw the picture and write the status text on top.
+void drawWindow() {
+    Canvas img = renderState(g_state, *g_world);
+    std::vector<unsigned char> rgb = img.toRGB();
+    glViewport(0, 0, g_windowWidth, g_windowHeight);
+    glClear(GL_COLOR_BUFFER_BIT);
+    double scale = std::min(double(g_windowWidth) / OUT_W, double(g_windowHeight) / OUT_H);
+    int width = int(OUT_W * scale), height = int(OUT_H * scale);
+    glViewport((g_windowWidth-width)/2, (g_windowHeight-height)/2, width, height);
+    glPixelZoom(float(scale), float(scale));
+    glRasterPos2i(-1, -1);                       // bottom-left of the window
+    glDrawPixels(img.width(), img.height(), GL_RGB, GL_UNSIGNED_BYTE, rgb.data());
+    glPixelZoom(1, 1);
+
+    glColor3f(1.0f, 1.0f, 1.0f);
+    glRasterPos2f(-0.98f, -0.93f);
+    std::string status = statusLine(g_state) + (g_paused ? "  PAUSED" : "  RUNNING");
+    for (char ch : status) glutBitmapCharacter(GLUT_BITMAP_9_BY_15, ch);
+    glRasterPos2f(-0.98f, -0.84f);
+    const std::string help = "W/S speed A/D steer C camera P/Space pause R restart Enter step F save Q quit";
+    for (char ch : help) glutBitmapCharacter(GLUT_BITMAP_9_BY_15, ch);
+    if (!g_state.note.empty()) {
+        glRasterPos2f(-0.98f, -0.75f);
+        for (char ch : g_state.note) glutBitmapCharacter(GLUT_BITMAP_9_BY_15, ch);
+    }
+    glutSwapBuffers();
+}
+
+// Window controls change settings; only the timer advances the running race.
+void onKey(unsigned char key, int, int) {
+    char k = (key == 13) ? '\n' : static_cast<char>(std::tolower(key));
+    if (k == 27 || k == 'q') std::exit(0);
+    if (k == 'p' || k == ' ') {
+        g_paused = !g_paused;
+        g_pendingMs = 0;
+        g_lastTick = glutGet(GLUT_ELAPSED_TIME);
+    } else if (k == 'r') {
+        g_state = PlayState{};
+        g_state.race = makeRace(g_world->teams);
+        g_paused = true; // show the starting grid until the user resumes
+        g_pendingMs = 0;
+        g_lastTick = glutGet(GLUT_ELAPSED_TIME);
+    } else if (k == '\n') {
+        if (g_paused) stepRace(g_state.race);
+    } else if (k == 'f') {
+        renderState(g_state, *g_world).saveBMP("f1_view.bmp");
+        g_state.note = "Saved f1_view.bmp";
+    } else {
+        applyKey(g_state, k, false);
+    }
+    glutPostRedisplay();
+}
+
+// Elapsed time keeps motion independent of rendering speed. Cap catch-up after
+// long stalls so restoring a window cannot skip a large section of the race.
+void animateWindow(int) {
+    int now = glutGet(GLUT_ELAPSED_TIME);
+    int elapsed = std::max(0, std::min(250, now - g_lastTick));
+    g_lastTick = now;
+    if (!g_paused) {
+        g_pendingMs += elapsed;
+        bool advanced = false;
+        while (g_pendingMs >= FRAME_MS) {
+            stepRace(g_state.race);
+            g_pendingMs -= FRAME_MS;
+            advanced = true;
+        }
+        if (advanced) glutPostRedisplay();
+    }
+    glutTimerFunc(16, animateWindow, 0);
+}
+
+int runWindow(const World& w) {
+    g_world = &w;
+    g_state.race = makeRace(w.teams);
+    int argc = 1;
+    char name[] = "f1_race";
+    char* argv[] = {name, nullptr};
+    glutInit(&argc, argv);
+    glutInitDisplayMode(GLUT_RGB | GLUT_DOUBLE);
+    glutInitWindowSize(OUT_W, OUT_H);
+    glutCreateWindow("F1 Race - P/Space pause, R restart, C camera");
+    glutDisplayFunc(drawWindow);
+    glutKeyboardFunc(onKey);
+    glutReshapeFunc(resizeWindow);
+    g_lastTick = glutGet(GLUT_ELAPSED_TIME);
+    glutTimerFunc(16, animateWindow, 0);
+    glutMainLoop();
+    return 0;
+}
+#endif
 
 int main(int argc, char** argv) {
     const int FRAMES = 100;          // one lap = 100 frames
     const int DELAY_CS = 4;          // 4/100 s per frame = 25 frames per second
 
     buildFrames();
-    std::vector<Item> scenery;
-    addTrees(scenery);
-    addWalls(scenery);
-    addStands(scenery, STAND_A0, STAND_A1);
-    addStands(scenery, STAND_B0, STAND_B1);
-    addGantry(scenery);
-    std::sort(scenery.begin(), scenery.end(), [](const Item& a, const Item& b) { return a.key < b.key; });
+    World world = buildWorld();
+    const std::string mode = argc > 1 ? argv[1] : "";
 
-    const std::vector<Team> teams = makeTeams();
-    std::vector<CarModel> cars;
-    for (const Team& t : teams) cars.push_back(makeCar(t.body, t.accent));
+    if (mode == "--check") return runCheck(world);
+    if (mode == "--play") {
+#ifdef F1_USE_GLUT
+        return runWindow(world);
+#else
+        return runTextPlay(world);
+#endif
+    }
 
-    // "--play" starts the interactive terminal mode. No arguments makes the GIF.
-    if (argc > 1 && std::string(argv[1]) == "--play") return runPlay(scenery, cars, teams);
-
-    // Static scene, drawn once and copied for every frame.
+    // Race recording for the GIF: one frame is drawn, then the race moves on one frame.
     Canvas base = buildBase();
-
+    double seam = 0;
+    Race race = makeRace(world.teams);
+    for (int f = findLoopStart(world.teams, seam); f > 0; --f) stepRace(race);
     GifWriter gif;
     for (int f = 0; f < FRAMES; ++f) {
-        double t = double(f) / FRAMES;                    // 0..1 through the lap
-        std::vector<CarPlace> places;
-        for (int i = 0; i < static_cast<int>(cars.size()); ++i)
-            places.push_back(aiPlace(i, teams[i], t));
-        Canvas out = renderWorld(base, scenery, places, cars);
-
+        Canvas out = renderWorld(base, world.scenery, placesOf(race), world.cars);
         if (f == 0) {
             out.saveBMP("f1_frame.bmp");
             gif.begin("f1_race.gif", out.width(), out.height(), buildPalette(out));
         }
         gif.addFrame(out, DELAY_CS);
+        stepRace(race);
         std::cout << "Frame " << (f + 1) << " / " << FRAMES << "\r" << std::flush;
     }
     gif.end();
